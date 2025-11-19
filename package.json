@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@supabase/supabase-js": "^2.83.0",
+    "axios": "^1.13.2",
     "micro": "^10.0.1",
     "near-api-js": "^6.5.1"
   }
