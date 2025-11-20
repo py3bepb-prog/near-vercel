@@ -3,21 +3,23 @@ const { send } = require('micro');
 const json = require('micro').json; 
 const axios = require('axios'); 
 
-// --- СЕКРЕТЫ ---
+// --- СЕКРЕТЫ И КОНСТАНТЫ ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
-// Используем Service Role Key для записи необработанных транзакций
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Константы NEAR (для чтения и фильтрации)
+// Наш кошелек, на который приходят депозиты (Используется NEAR_SENDER_ID)
 const DEPOSIT_ACCOUNT_ID = process.env.NEAR_SENDER_ID; 
+
+// ID контракта токена (TOKEN_CONTRACT_ID)
 const TOKEN_CONTRACT_ID = process.env.TOKEN_CONTRACT_ID; 
-// API NEARBlocks для FT-транзакций
-const EXPLORER_API_URL = `https://api.testnet.nearblocks.io/v1/fts/txns/${DEPOSIT_ACCOUNT_ID}`; 
+
+// ИСПРАВЛЕННЫЙ API: Используем рабочий домен (api-testnet) и путь /v1/account/[CONTRACT_ID]/txns
+const EXPLORER_API_URL = `https://api-testnet.nearblocks.io/v1/account/${TOKEN_CONTRACT_ID}/txns`; 
 
 
-// --- ОСНОВНАЯ ФУНКЦИЯ VERCEL (Запускается Supabase Cron) ---
+// --- ОСНОВНАЯ ФУНКЦИЯ VERCEL ---
 module.exports = async (req, res) => {
     
     if (req.method !== 'POST') {
@@ -26,69 +28,80 @@ module.exports = async (req, res) => {
     
     try {
         const data = await json(req);
-        // ОЖИДАЕМ ПАРАМЕТР last_checked_time ОТ CRON
-        const lastCheckedTime = data.last_checked_time || 0; // 0, если не передан
-        let latestTxnTimestamp = 0; // Для возврата самого нового таймстампа
+        // lastCheckedTime в наносекундах (BigInt)
+        const lastCheckedTime = BigInt(data.last_checked_time || 0);
+        let latestTxnTimestamp = lastCheckedTime; 
 
         // 1. ЗАПРОС К NEARBLOCKS API
         const explorerResponse = await axios.get(EXPLORER_API_URL, {
             params: {
-                contract_id: TOKEN_CONTRACT_ID, 
-                limit: 50 // Всегда запрашиваем перекрытие
+                limit: 50, 
+                order: 'desc' 
             }
         });
 
-        const txns = explorerResponse.data.fts;
+        // 2. ИТЕРАЦИЯ И ФИЛЬТРАЦИЯ
+        const txns = explorerResponse.data.txns || [];
         let newDeposits = 0;
         
-        // 2. ИТЕРАЦИЯ И ФИЛЬТРАЦИЯ
         for (const txn of txns) {
-            const currentTxnTimestamp = txn.block_timestamp; // В наносекундах (Unix)
+            const currentTxnTimestamp = BigInt(txn.block_timestamp); 
             
-            // Фильтруем: обрабатываем только транзакции, которые новее, чем
-            // последний обработанный таймстамп (игнорируем старые)
+            // Фильтр 1: По времени
             if (currentTxnTimestamp <= lastCheckedTime) {
-                // Если API возвращает отсортированные данные, можно выйти:
-                // break; 
-                continue; // Продолжаем проверять, так как сортировка может быть не идеальной
+                break; 
             }
             
-            // Обновляем метку для возврата (самая свежая транзакция в этой выборке)
+            // Обновляем метку
             if (currentTxnTimestamp > latestTxnTimestamp) {
                 latestTxnTimestamp = currentTxnTimestamp;
             }
 
-            // Проверяем, что это входящий перевод на наш кошелек-сборщик
-            if (txn.receiver_id === DEPOSIT_ACCOUNT_ID && txn.method_name === 'ft_transfer') {
-                
-                const depositData = {
-                    tx_hash: txn.transaction_hash,
-                    sender_id: txn.sender_id,
-                    amount: txn.amount, 
-                    created_at: new Date(Number(txn.block_timestamp) / 1000000).toISOString(),
-                };
+            // Ищем FUNCTION_CALL с методом 'ft_transfer'
+            const ftTransferAction = txn.actions.find(
+                a => a.action === 'FUNCTION_CALL' && a.method === 'ft_transfer'
+            );
 
-                // 3. ЗАПИСЬ В SUPABASE
-                const { error: upsertError } = await supabase
-                    .from('incoming_deposits')
-                    .upsert(depositData, { 
-                        onConflict: 'tx_hash', 
-                        ignoreDuplicates: true 
-                    });
+            if (ftTransferAction) {
+                try {
+                    // Аргументы ft_transfer находятся в JSON-строке
+                    const args = JSON.parse(ftTransferAction.args);
+                    
+                    // Условие ВХОДЯЩЕГО ДЕПОЗИТА: args.receiver_id должен быть наш кошелек-сборщик (DEPOSIT_ACCOUNT_ID)
+                    if (args.receiver_id === DEPOSIT_ACCOUNT_ID) {
+                        
+                        const depositData = {
+                            tx_hash: txn.transaction_hash,
+                            sender_id: txn.predecessor_account_id, // Отправитель транзакции
+                            amount: args.amount, // Сумма из аргументов
+                            created_at: new Date(Number(currentTxnTimestamp) / 1000000).toISOString(),
+                        };
 
-                if (!upsertError) {
-                    newDeposits++;
-                } else if (upsertError && upsertError.code !== '23505') { 
-                    console.error(`Supabase UPSERT Error for ${txn.transaction_hash}:`, upsertError);
+                        // 3. ЗАПИСЬ В SUPABASE
+                        const { error: upsertError } = await supabase
+                            .from('incoming_deposits')
+                            .upsert(depositData, { 
+                                onConflict: 'tx_hash', 
+                                ignoreDuplicates: true 
+                            });
+
+                        if (!upsertError) {
+                            newDeposits++;
+                        } else if (upsertError && upsertError.code !== '23505') { 
+                            console.error(`Supabase UPSERT Error for ${txn.transaction_hash}:`, upsertError);
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Error parsing args for txn ${txn.transaction_hash}:`, e.message);
                 }
             }
         }
 
-        // 4. Успешный ответ (возвращаем самый свежий таймстамп для обновления в Supabase)
+        // 4. Успешный ответ
         return send(res, 200, {
             success: true,
             message: `Batch check complete. ${newDeposits} new transactions recorded.`,
-            latest_timestamp: latestTxnTimestamp // КЛЮЧЕВОЙ МОМЕНТ: ВОЗВРАТ НОВОЙ МЕТКИ
+            latest_timestamp: latestTxnTimestamp.toString() 
         });
 
     } catch (e) {
