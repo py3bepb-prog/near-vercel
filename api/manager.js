@@ -1,24 +1,29 @@
 const nearAPI = require('near-api-js');
-const { send } = require('micro'); 
-const json = require('micro').json; 
+const { send } = require('micro');
+const json = require('micro').json;
+const { createClient } = require('@supabase/supabase-js'); // <-- НОВЫЙ МОДУЛЬ
 
-// --- КОНСТАНТЫ СЕТИ ---
-const NETWORK_ID = 'testnet'; 
+// --- КОНСТАНТЫ СЕТИ И SUPABASE ---
+const NETWORK_ID = 'testnet';
 const NODE_URL = 'https://rpc.testnet.near.org';
 
-// КОНСТАНТЫ ДЛЯ ТРАНЗАКЦИЙ (BigInt работает в Node.js)
-const ONE_YOCTO = BigInt(1); 
-const GAS_LIMIT = BigInt('30000000000000'); 
-const MIN_STORAGE_DEPOSIT = BigInt('1250000000000000000000'); 
-
 // Переменные окружения Vercel
-const TOKEN_CONTRACT_ID = process.env.TOKEN_CONTRACT_ID; 
+const TOKEN_CONTRACT_ID = process.env.TOKEN_CONTRACT_ID;
 const SENDER_ID = process.env.NEAR_SENDER_ID;
 const PRIVATE_KEY = process.env.NEAR_PRIVATE_KEY;
+// Ключи Supabase
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL; // Public URL
+// Используем Service Role Key для БЕЗОПАСНОЙ проверки токена на бэкенде
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
-const config = {
-    networkId: NETWORK_ID, 
-    nodeUrl: NODE_URL, 
+// КОНСТАНТЫ ДЛЯ ТРАНЗАКЦИЙ
+const ONE_YOCTO = BigInt(1);
+const GAS_LIMIT = BigInt('30000000000000');
+const MIN_STORAGE_DEPOSIT = BigInt('1250000000000000000000');
+
+const nearConfig = {
+    networkId: NETWORK_ID,
+    nodeUrl: NODE_URL,
 };
 
 // --- ОСНОВНАЯ ФУНКЦИЯ ОБРАБОТКИ ---
@@ -27,31 +32,82 @@ module.exports = async (req, res) => {
         return send(res, 405, { error: 'Method Not Allowed' });
     }
 
-    if (!PRIVATE_KEY || !SENDER_ID || !TOKEN_CONTRACT_ID) {
-         return send(res, 500, { error: 'Server configuration error: NEAR secrets or contract ID missing.' });
+    if (!PRIVATE_KEY || !SENDER_ID || !TOKEN_CONTRACT_ID || !SUPABASE_SERVICE_ROLE_KEY) {
+          return send(res, 500, { error: 'Server configuration error: NEAR or Supabase secrets missing.' });
+    }
+    
+    // ====================================================
+    // 1. АВТОРИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ ЧЕРЕЗ JWT (КРИТИЧЕСКИ ВАЖНО)
+    // ====================================================
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return send(res, 401, { error: 'Authorization header missing or invalid.' });
+    }
+    const token = authHeader.replace('Bearer ', '');
+    
+    // Инициализируем Supabase клиент с Service Role Key для верификации токена
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false,
+        }
+    });
+
+    let userId;
+    try {
+        // Проверяем токен: эта операция безопасна, так как использует Service Role Key, 
+        // но НЕ обходит RLS, она просто верифицирует, что токен выпущен Supabase.
+        const { data: userData, error: authError } = await supabase.auth.getUser(token);
+
+        if (authError || !userData?.user) {
+            console.error('JWT Verification Failed:', authError?.message);
+            return send(res, 401, { error: 'Invalid or expired authentication token.' });
+        }
+        
+        userId = userData.user.id;
+        
+        // Дополнительная проверка: запрет на вывод, если кошелек не верифицирован.
+        // Это требует обращения к вашей таблице wallets.
+        const { data: walletData, error: walletError } = await supabase
+            .from('wallets')
+            .select('is_verified')
+            .eq('user_id', userId)
+            .single();
+
+        if (walletError || !walletData || walletData.is_verified !== true) {
+            console.error('Wallet Verification Failed for user:', userId);
+            return send(res, 403, { error: 'User wallet is not verified or not attached.' });
+        }
+
+    } catch (e) {
+        console.error('Supabase Auth Error:', e.message);
+        return send(res, 500, { error: 'Internal authentication service error.' });
     }
 
+    // ====================================================
+    // 2. ОСНОВНАЯ ЛОГИКА NEAR (Только после успешной JWT-проверки)
+    // ====================================================
     try {
         const data = await json(req);
         // Добавлен обязательный параметр 'action'
-        const { action, receiver_id, amount } = data; 
+        const { action, receiver_id, amount } = data;
 
         if (!action || !amount) {
             return send(res, 400, { error: 'Missing required parameters: action and/or amount.' });
         }
-
+        
         // 1. Инициализация NEAR
-        const { KeyPair, keyStores, transactions } = nearAPI; 
+        const { KeyPair, keyStores, transactions } = nearAPI;
         const { InMemoryKeyStore } = keyStores;
         
         const keyPair = KeyPair.fromString(PRIVATE_KEY);
         const keyStore = new InMemoryKeyStore();
-        await keyStore.setKey(NETWORK_ID, SENDER_ID, keyPair); 
+        await keyStore.setKey(NETWORK_ID, SENDER_ID, keyPair);
         
-        const near = await nearAPI.connect({ ...config, keyStore });
-        const account = await near.account(SENDER_ID); 
-
-        // 2. Формирование действий
+        const near = await nearAPI.connect({ ...nearConfig, keyStore });
+        const account = await near.account(SENDER_ID);
+        
+        // 2. Формирование действий (без изменений)
         const actions = [];
         let methodName;
         let methodArgs = { amount };
@@ -84,7 +140,7 @@ module.exports = async (req, res) => {
                         'storage_deposit',
                         { account_id: receiver_id, registration_only: true },
                         GAS_LIMIT,
-                        MIN_STORAGE_DEPOSIT 
+                        MIN_STORAGE_DEPOSIT
                     )
                 );
             }
@@ -94,9 +150,8 @@ module.exports = async (req, res) => {
             
             // B) Сжигание (Burn)
             actionDescription = 'Token burning successful';
-            methodName = 'ft_burn'; 
-            // Для ft_burn обычно не нужен receiver_id, только amount
-            methodArgs = { amount: amount }; 
+            methodName = 'ft_burn';
+            methodArgs = { amount: amount };
             // Контракт, который вызываем, остается TOKEN_CONTRACT_ID
 
         } else {
@@ -115,7 +170,7 @@ module.exports = async (req, res) => {
 
         // 3. Выполнение транзакции
         const result = await account.signAndSendTransaction({
-            receiverId: receiverContract, 
+            receiverId: receiverContract,
             actions: actions,
         });
 
@@ -129,9 +184,9 @@ module.exports = async (req, res) => {
     } catch (e) {
         // 5. Обработка ошибок
         console.error('NEAR Transaction Error:', e.message);
-        return send(res, 500, { 
-            error: 'Transaction failed', 
-            details: e.message 
+        return send(res, 500, {
+            error: 'Transaction failed',
+            details: e.message
         });
     }
 };
