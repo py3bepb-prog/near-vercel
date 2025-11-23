@@ -1,0 +1,19 @@
+{
+  "rewrites": [
+    {
+      "source": "/near-bridge.html",
+      "destination": "/near-bridge.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/near-bridge.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ]
+}
