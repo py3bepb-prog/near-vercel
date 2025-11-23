@@ -32,7 +32,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data: walletData, error: dbError } = await supabase
         .from('wallets')
         .select('verification_code, is_verified')
-        .eq('near_account', nearAccount)
+        .eq('near_account_id', nearAccount)
         .eq('user_id', userId)
         .single();
     
@@ -77,7 +77,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         await supabase
             .from('wallets')
             .update({ is_verified: true })
-            .eq('near_account', nearAccount);
+            .eq('near_account_id', nearAccount);
         
         // Вызываем SQL-функцию для клейма старых депозитов (user_id берется из токена внутри RPC)
         const { data: claimData, error: claimError } = await supabase.rpc('claim_unprocessed_deposits');

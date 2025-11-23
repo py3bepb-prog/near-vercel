@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEAR Verification Bridge</title>
+    <script src="https://unpkg.com/@near-wallet-selector/core@7.9.4/dist/near-wallet-selector.umd.js"></script>
+    <script src="https://unpkg.com/@near-wallet-selector/my-near-wallet@7.9.4/dist/my-near-wallet.umd.js"></script>
+    <script src="https://unpkg.com/@near-wallet-selector/modal-ui@7.9.4/dist/modal-ui.umd.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        button { background-color: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h2>Подтверждение владения NEAR</h2>
+    <p>Для верификации кошелька необходимо подписать сообщение.</p>
+    <div id="loading" class="spinner"></div>
+    <div id="content" style="display: none;">
+        <p>Аккаунт: <strong id="accountIdText">...</strong></p>
+        <button id="connectButton">Подключить и Подписать</button>
+    </div>
+    <div id="error" style="color: red; display: none;"></div>
+
+    <script>
+        const NETWORK_ID = 'testnet';
+        const CONTRACT_ID = 'vibeindex.testnet'; // Ваш контракт (если есть) или любой тестовый
+
+        function getUrlParams() {
+            const params = {};
+            new URLSearchParams(window.location.search).forEach((value, key) => {
+                params[key] = value;
+            });
+            return params;
+        }
+
+        async function initSelector() {
+            try {
+                const { code, account } = getUrlParams();
+                if (!code || !account) {
+                    document.getElementById('error').innerText = 'Ошибка: Недостаточно параметров (code/account).';
+                    document.getElementById('error').style.display = 'block';
+                    return;
+                }
+                
+                document.getElementById('accountIdText').innerText = account;
+
+                // 1. Инициализация Selector
+                const selector = await nearWalletSelector.setup({
+                    network: NETWORK_ID,
+                    debug: true,
+                    modules: [
+                        nearWalletSelector.MyNearWallet.setup({
+                            // Без keyStore: используем как Deep Link
+                        }),
+                    ],
+                });
+
+                const modal = nearWalletSelector.ModalUI.setup(selector, {
+                    theme: 'dark',
+                    contractId: CONTRACT_ID,
+                });
+                
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                document.getElementById('connectButton').onclick = () => signMessage(selector, modal, code, account);
+
+            } catch (err) {
+                document.getElementById('error').innerText = 'Ошибка инициализации кошелька: ' + err.message;
+                document.getElementById('error').style.display = 'block';
+            }
+        }
+        
+        async function signMessage(selector, modal, code, expectedAccount) {
+            try {
+                const wallet = await selector.wallet();
+
+                // 2. Подключение (если не подключен)
+                if (!wallet.isSignedIn()) {
+                    modal.show();
+                    return; 
+                }
+
+                const accounts = await wallet.getAccounts();
+                const currentAccount = accounts.find(a => a.accountId === expectedAccount);
+                
+                if (!currentAccount) {
+                     alert(`Пожалуйста, выберите аккаунт ${expectedAccount} в кошельке.`);
+                     modal.show();
+                     return;
+                }
+
+                // 3. Запрос на подпись сообщения
+                const signatureResult = await wallet.signMessage({
+                    message: code,
+                    // Используем аккаунт, который мы ожидаем
+                    recipient: expectedAccount, 
+                    nonce: Buffer.from(Date.now().toString()).toJSON().data,
+                });
+
+                const { signature, accountId } = signatureResult;
+                
+                // 4. Возврат результата в FlutterFlow через Deep Link
+                // Используем схему, настроенную в FlutterFlow
+                const callbackUrl = `vibeindex://vibeindex.app/verification-result?signature=${signature}&nearAccountId=${accountId}`;
+                
+                // Перенаправление (закроет Webview и откроет мобильное приложение)
+                window.location.href = callbackUrl;
+                
+            } catch (err) {
+                document.getElementById('error').innerText = 'Ошибка подписи: ' + err.message;
+                document.getElementById('error').style.display = 'block';
+            }
+        }
+
+        initSelector();
+    </script>
+</body>
+</html>
