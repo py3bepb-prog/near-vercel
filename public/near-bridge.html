@@ -3,13 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEAR Verification Bridge</title>
+    <title>NEAR Verification Bridge (HOT Connect)</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@hot-connect/near@0.1.x/dist/index.umd.js"></script> 
     
     <script src="https://unpkg.com/buffer@6.0.3/index.js"></script> 
 
-    <script src="https://unpkg.com/@near-wallet-selector/core@7.9.4/dist/near-wallet-selector.umd.js"></script>
-    <script src="https://unpkg.com/@near-wallet-selector/my-near-wallet@7.9.4/dist/my-near-wallet.umd.js"></script>
-    <script src="https://unpkg.com/@near-wallet-selector/modal-ui@7.9.4/dist/modal-ui.umd.js"></script>
     <style>
         body { font-family: sans-serif; text-align: center; padding: 20px; }
         .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
@@ -30,7 +29,7 @@
 
     <script>
         const NETWORK_ID = 'testnet';
-        const CONTRACT_ID = 'vibeindex.testnet'; 
+        const CONTRACT_ID = 'vibeindex.testnet'; // Используется для идентификации dApp
 
         function getUrlParams() {
             const params = {};
@@ -42,11 +41,11 @@
 
         async function initSelector() {
             try {
-                // ПРОВЕРКА ДЛЯ ИЗБЕЖАНИЯ ОШИБКИ:
-                if (typeof nearWalletSelector === 'undefined') {
-                    throw new Error('Wallet Selector SDK не загружен. Проблема с CDN.');
+                // Проверка доступности HOT Connect
+                if (typeof HotConnect === 'undefined' || typeof HotConnect.selector === 'undefined') {
+                    throw new Error('HOT Connect SDK не загружен. Проблема с CDN.');
                 }
-                
+
                 const { code, account } = getUrlParams();
                 if (!code || !account) {
                     document.getElementById('error').innerText = 'Ошибка: Недостаточно параметров (code/account).';
@@ -56,16 +55,16 @@
                 
                 document.getElementById('accountIdText').innerText = account;
 
-                // 1. Инициализация Selector
-                const selector = await nearWalletSelector.setup({
+                // 1. Инициализация Selector через HOT Connect
+                const selector = await HotConnect.selector.setup({
                     network: NETWORK_ID,
                     debug: true,
-                    modules: [
-                        nearWalletSelector.MyNearWallet.setup({}),
-                    ],
+                    // HOT Connect автоматически включает модули, такие как MyNearWallet
+                    modules: [], 
                 });
 
-                const modal = nearWalletSelector.ModalUI.setup(selector, {
+                // Используем HotConnect.modal
+                const modal = HotConnect.modal.setup(selector, {
                     theme: 'dark',
                     contractId: CONTRACT_ID,
                 });
@@ -84,43 +83,4 @@
             try {
                 const wallet = await selector.wallet();
 
-                // 2. Подключение
-                if (!wallet.isSignedIn()) {
-                    modal.show();
-                    return; 
-                }
-
-                const accounts = await wallet.getAccounts();
-                const currentAccount = accounts.find(a => a.accountId === expectedAccount);
-                
-                if (!currentAccount) {
-                     alert(`Пожалуйста, выберите аккаунт ${expectedAccount} в кошельке.`);
-                     modal.show();
-                     return;
-                }
-
-                // 3. Запрос на подпись сообщения
-                const signatureResult = await wallet.signMessage({
-                    message: code,
-                    recipient: currentAccount.accountId, // Используем найденный ID
-                    nonce: Buffer.from(Date.now().toString()).toJSON().data, 
-                });
-
-                const { signature, accountId } = signatureResult;
-                
-                // 4. Возврат результата в FlutterFlow
-                const callbackUrl = `vibeindex://vibeindex.app/verification-result?signature=${signature}&nearAccountId=${accountId}`;
-                
-                window.location.href = callbackUrl;
-                
-            } catch (err) {
-                document.getElementById('error').innerText = 'Ошибка подписи: ' + err.message;
-                document.getElementById('error').style.display = 'block';
-            }
-        }
-
-        // Запуск кода после полной загрузки DOM и всех скриптов
-        window.onload = initSelector;
-    </script>
-</body>
-</html>
+                // 2. Подключение (если не подключен
