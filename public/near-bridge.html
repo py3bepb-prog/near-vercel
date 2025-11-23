@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NEAR Verification Bridge</title>
+    
+    <script src="https://unpkg.com/buffer@6.0.3/index.js"></script> 
+
     <script src="https://unpkg.com/@near-wallet-selector/core@7.9.4/dist/near-wallet-selector.umd.js"></script>
     <script src="https://unpkg.com/@near-wallet-selector/my-near-wallet@7.9.4/dist/my-near-wallet.umd.js"></script>
     <script src="https://unpkg.com/@near-wallet-selector/modal-ui@7.9.4/dist/modal-ui.umd.js"></script>
@@ -69,6 +72,7 @@
                 document.getElementById('connectButton').onclick = () => signMessage(selector, modal, code, account);
 
             } catch (err) {
+                // Если ошибка инициализации: печатаем ее
                 document.getElementById('error').innerText = 'Ошибка инициализации кошелька: ' + err.message;
                 document.getElementById('error').style.display = 'block';
             }
@@ -89,6 +93,7 @@
                 
                 if (!currentAccount) {
                      alert(`Пожалуйста, выберите аккаунт ${expectedAccount} в кошельке.`);
+                     // Если аккаунт не тот, показываем модальное окно для смены/подключения
                      modal.show();
                      return;
                 }
@@ -98,13 +103,13 @@
                     message: code,
                     // Используем аккаунт, который мы ожидаем
                     recipient: expectedAccount, 
-                    nonce: Buffer.from(Date.now().toString()).toJSON().data,
+                    // Buffer теперь доступен благодаря полифиллу
+                    nonce: Buffer.from(Date.now().toString()).toJSON().data, 
                 });
 
                 const { signature, accountId } = signatureResult;
                 
                 // 4. Возврат результата в FlutterFlow через Deep Link
-                // Используем схему, настроенную в FlutterFlow
                 const callbackUrl = `vibeindex://vibeindex.app/verification-result?signature=${signature}&nearAccountId=${accountId}`;
                 
                 // Перенаправление (закроет Webview и откроет мобильное приложение)
