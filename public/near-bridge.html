@@ -30,7 +30,7 @@
 
     <script>
         const NETWORK_ID = 'testnet';
-        const CONTRACT_ID = 'vibeindex.testnet'; // Ваш контракт (если есть) или любой тестовый
+        const CONTRACT_ID = 'vibeindex.testnet'; 
 
         function getUrlParams() {
             const params = {};
@@ -42,6 +42,11 @@
 
         async function initSelector() {
             try {
+                // ПРОВЕРКА ДЛЯ ИЗБЕЖАНИЯ ОШИБКИ:
+                if (typeof nearWalletSelector === 'undefined') {
+                    throw new Error('Wallet Selector SDK не загружен. Проблема с CDN.');
+                }
+                
                 const { code, account } = getUrlParams();
                 if (!code || !account) {
                     document.getElementById('error').innerText = 'Ошибка: Недостаточно параметров (code/account).';
@@ -56,9 +61,7 @@
                     network: NETWORK_ID,
                     debug: true,
                     modules: [
-                        nearWalletSelector.MyNearWallet.setup({
-                            // Без keyStore: используем как Deep Link
-                        }),
+                        nearWalletSelector.MyNearWallet.setup({}),
                     ],
                 });
 
@@ -72,7 +75,6 @@
                 document.getElementById('connectButton').onclick = () => signMessage(selector, modal, code, account);
 
             } catch (err) {
-                // Если ошибка инициализации: печатаем ее
                 document.getElementById('error').innerText = 'Ошибка инициализации кошелька: ' + err.message;
                 document.getElementById('error').style.display = 'block';
             }
@@ -82,7 +84,7 @@
             try {
                 const wallet = await selector.wallet();
 
-                // 2. Подключение (если не подключен)
+                // 2. Подключение
                 if (!wallet.isSignedIn()) {
                     modal.show();
                     return; 
@@ -93,7 +95,6 @@
                 
                 if (!currentAccount) {
                      alert(`Пожалуйста, выберите аккаунт ${expectedAccount} в кошельке.`);
-                     // Если аккаунт не тот, показываем модальное окно для смены/подключения
                      modal.show();
                      return;
                 }
@@ -101,18 +102,15 @@
                 // 3. Запрос на подпись сообщения
                 const signatureResult = await wallet.signMessage({
                     message: code,
-                    // Используем аккаунт, который мы ожидаем
-                    recipient: expectedAccount, 
-                    // Buffer теперь доступен благодаря полифиллу
+                    recipient: currentAccount.accountId, // Используем найденный ID
                     nonce: Buffer.from(Date.now().toString()).toJSON().data, 
                 });
 
                 const { signature, accountId } = signatureResult;
                 
-                // 4. Возврат результата в FlutterFlow через Deep Link
+                // 4. Возврат результата в FlutterFlow
                 const callbackUrl = `vibeindex://vibeindex.app/verification-result?signature=${signature}&nearAccountId=${accountId}`;
                 
-                // Перенаправление (закроет Webview и откроет мобильное приложение)
                 window.location.href = callbackUrl;
                 
             } catch (err) {
@@ -121,7 +119,8 @@
             }
         }
 
-        initSelector();
+        // Запуск кода после полной загрузки DOM и всех скриптов
+        window.onload = initSelector;
     </script>
 </body>
 </html>
