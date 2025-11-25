@@ -13,6 +13,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.84.0",
     "axios": "^1.13.2",
+    "big.js": "^7.0.1",
     "bs58": "^6.0.0",
     "micro": "^10.0.1",
     "near-api-js": "^6.5.1",
