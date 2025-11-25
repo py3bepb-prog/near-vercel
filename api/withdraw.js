@@ -14,7 +14,7 @@ const NODE_URL = 'https://rpc.testnet.near.org';
 const TOKEN_CONTRACT_ID = process.env.TOKEN_CONTRACT_ID;
 const SENDER_ID = process.env.NEAR_SENDER_ID;
 const PRIVATE_KEY = process.env.NEAR_PRIVATE_KEY;
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL; 
+const SUPABASE_URL = process.env.SUPABASE_URL; 
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
 // --- КОНСТАНТЫ ДЛЯ ТРАНЗАКЦИЙ И ТОКЕНОВ ---
