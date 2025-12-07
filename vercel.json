@@ -1,6 +1,7 @@
 {
-  "crons": [
+  "crons":
     {
       "path": "/api/burn_scheduler",
       "schedule": "0 3 * * *"
     }
+}
