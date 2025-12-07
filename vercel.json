@@ -3,10 +3,4 @@
     {
       "path": "/api/burn_scheduler",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/burn_scheduler",
-      "schedule": "*/10 * * * *"
     }
-  ]
-}
