@@ -3,23 +3,24 @@ const { send } = require('micro');
 const json = require('micro').json; 
 const axios = require('axios'); 
 
-// --- СЕКРЕТЫ И КОНСТАНТЫ ---
+// --- SECRETS AND CONSTANTS ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Наш кошелек, на который приходят депозиты (Используется NEAR_SENDER_ID)
+// Our collector wallet (app.vibeindex.near)
 const DEPOSIT_ACCOUNT_ID = process.env.NEAR_SENDER_ID; 
 
-// ID контракта токена (TOKEN_CONTRACT_ID)
+// Token contract (token.vibeindex.near)
 const TOKEN_CONTRACT_ID = process.env.TOKEN_CONTRACT_ID; 
 
-// ИСПРАВЛЕННЫЙ API: Используем рабочий домен (api-testnet) и путь /v1/account/[CONTRACT_ID]/txns
-const EXPLORER_API_URL = `https://api-testnet.nearblocks.io/v1/account/${TOKEN_CONTRACT_ID}/txns`; 
+// Используем переменную из окружения, если она есть, иначе ставим дефолт Mainnet
+const NEARBLOCKS_BASE_URL = process.env.NEARBLOCKS_BASE_URL || 'https://api.nearblocks.io';
 
+// Теперь URL формируется динамически
+const EXPLORER_API_URL = `${NEARBLOCKS_BASE_URL}/v1/account/${TOKEN_CONTRACT_ID}/txns`; 
 
-// --- ОСНОВНАЯ ФУНКЦИЯ VERCEL ---
 module.exports = async (req, res) => {
     
     if (req.method !== 'POST') {
@@ -28,11 +29,11 @@ module.exports = async (req, res) => {
     
     try {
         const data = await json(req);
-        // lastCheckedTime в наносекундах (BigInt)
+        // lastCheckedTime in nanoseconds (BigInt) from your database
         const lastCheckedTime = BigInt(data.last_checked_time || 0);
         let latestTxnTimestamp = lastCheckedTime; 
 
-        // 1. ЗАПРОС К NEARBLOCKS API
+        // 1. REQUEST TO NEARBLOCKS MAINNET API
         const explorerResponse = await axios.get(EXPLORER_API_URL, {
             params: {
                 limit: 50, 
@@ -40,44 +41,49 @@ module.exports = async (req, res) => {
             }
         });
 
-        // 2. ИТЕРАЦИЯ И ФИЛЬТРАЦИЯ
+        // 2. ITERATION AND FILTERING
         const txns = explorerResponse.data.txns || [];
         let newDeposits = 0;
         
-        for (const txn of txns) {
+	for (const txn of txns) {
             const currentTxnTimestamp = BigInt(txn.block_timestamp); 
             
-            // Фильтр 1: По времени
             if (currentTxnTimestamp <= lastCheckedTime) {
                 break; 
             }
             
-            // Обновляем метку
             if (currentTxnTimestamp > latestTxnTimestamp) {
                 latestTxnTimestamp = currentTxnTimestamp;
             }
 
-            // Ищем FUNCTION_CALL с методом 'ft_transfer'
+            // --- КРИТИЧЕСКОЕ ДОБАВЛЕНИЕ: ПРОВЕРКА СТАТУСА ---
+            // В Nearblocks API статус обычно находится в txn.outcomes.status
+            // Мы обрабатываем только успешные транзакции.
+            const isSuccess = txn.outcomes && txn.outcomes.status === true; 
+            // В некоторых версиях API это может быть строка 'success' или поле status: 1
+            // Для Nearblocks v1 это обычно булево значение в outcomes.status
+            
+            if (!isSuccess) continue; 
+
             const ftTransferAction = txn.actions.find(
                 a => a.action === 'FUNCTION_CALL' && a.method === 'ft_transfer'
             );
 
             if (ftTransferAction) {
                 try {
-                    // Аргументы ft_transfer находятся в JSON-строке
                     const args = JSON.parse(ftTransferAction.args);
                     
-                    // Условие ВХОДЯЩЕГО ДЕПОЗИТА: args.receiver_id должен быть наш кошелек-сборщик (DEPOSIT_ACCOUNT_ID)
+                    // CHECK: Is this an incoming deposit to our app wallet?
                     if (args.receiver_id === DEPOSIT_ACCOUNT_ID) {
                         
                         const depositData = {
                             tx_hash: txn.transaction_hash,
-                            sender_id: txn.predecessor_account_id, // Отправитель транзакции
-                            amount: args.amount, // Сумма из аргументов
+                            sender_id: txn.predecessor_account_id, 
+                            amount: args.amount, // Full atomic amount (with 18 decimals)
                             created_at: new Date(Number(currentTxnTimestamp) / 1000000).toISOString(),
                         };
 
-                        // 3. ЗАПИСЬ В SUPABASE
+                        // 3. UPSERT TO SUPABASE
                         const { error: upsertError } = await supabase
                             .from('incoming_deposits')
                             .upsert(depositData, { 
@@ -97,7 +103,6 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 4. Успешный ответ
         return send(res, 200, {
             success: true,
             message: `Batch check complete. ${newDeposits} new transactions recorded.`,
